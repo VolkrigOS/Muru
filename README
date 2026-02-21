@@ -1,0 +1,77 @@
+init
+=====
+
+a minimal init for Linux
+
+
+
+how to compile
+===============
+
+run "make build"
+to install, use make install
+if you want a install prefix, define DESTDIR as your desired prefix.
+
+
+
+what is an init and how to use it?
+=============================
+
+init is the first process started by the kernel after boot (PID 1).
+It is the parent of all processes on the system and is responsible
+for bringing the system up and taking it down cleanly.
+
+
+SIGNALS
+-------
+
+init listens to a few signals to know what to do:
+
+SIGTERM  - go to single-user mode
+SIGUSR2  - poweroff
+SIGINT   - reboot
+
+
+MODES
+-----
+
+init operates in two main modes:
+
+multi-user  - normal operation, all daemons and services running
+single-user - minimal mode, only a root shell on the console
+
+
+GOING TO SINGLE-USER (su1)
+--------------------------
+
+When init receives SIGTERM, it:
+
+1. runs /etc/rc.shutdown to stop services
+2. sends SIGTERM to all running processes (graceful stop)
+3. waits a moment
+4. sends SIGKILL to processes still alive
+5. drops into a root shell on the console
+
+
+SHUTDOWN
+--------
+
+When init receives SIGUSR2, it does the same cleanup as above,
+but at the end instead of dropping to a shell, it calls the
+reboot(2) syscall with the RB_POWEROFF flag, which tells the
+kernel to cut power through ACPI.
+
+
+REBOOT
+------
+
+Same as shutdown, but the final syscall uses the RB_AUTOBOOT flag
+instead, which makes the kernel restart the machine.
+
+
+SUMMARY
+-------
+
+su1       -> SIGTERM  -> stop services -> kill processes -> root shell
+shutdown  -> SIGUSR2  -> stop services -> kill processes -> reboot(RB_POWEROFF)
+reboot    -> SIGINT   -> stop services -> kill processes -> reboot(RB_AUTOBOOT)
