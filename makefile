@@ -1,6 +1,6 @@
 CC = cc
 STRIP = strip
-CFLAGS = -std=c99 -Wall -Wextra -pedantic -D_XOPEN_SOURCE=700
+CFLAGS = -std=c99 -Wall -Wextra -pedantic -D_XOPEN_SOURCE=700 -static
 
 all: build
 

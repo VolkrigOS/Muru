@@ -66,12 +66,19 @@ static void mount_dev(void) {
 
 static void init_console(void) {
     int fd;
+
+    fd = open("/dev/tty0", O_WRONLY | O_NOCTTY);
+
     fd = open("/dev/console", O_RDWR | O_NOCTTY);
-    if (fd < 0) return;
-    if (fd != 0) dup2(fd, 0);
-    if (fd != 1) dup2(fd, 1);
-    if (fd != 2) dup2(fd, 2);
-    if (fd > 2)  close(fd);
+    if (fd < 0)
+        return;
+
+    dup2(fd, STDIN_FILENO);
+    dup2(fd, STDOUT_FILENO);
+    dup2(fd, STDERR_FILENO);
+
+    if (fd > STDERR_FILENO)
+        close(fd);
 }
 
 static void wait_for(pid_t pid) {
@@ -144,12 +151,42 @@ static void spawn_gettys(void) {
 
 static void run_rc(void) {
     pid_t pid;
+
     pid = fork();
+
     if (pid == 0) {
-        execl("/bin/sh", "/bin/sh", RC_PATH, (char *)NULL);
+if (access("/bin/sh", X_OK) != 0) {
+    char buf[64];
+    int n = snprintf(buf, sizeof(buf),
+                     "/bin/sh errno=%d\n", errno);
+    write(STDERR_FILENO, buf, n);
+} else {
+    write(STDERR_FILENO, "/bin/sh OK\n", 18);
+}
+
+if (access("/etc/rc", R_OK) != 0) {
+    char buf[64];
+    int n = snprintf(buf, sizeof(buf),
+                     "/etc/rc errno=%d\n", errno);
+    write(STDERR_FILENO, buf, n);
+} else {
+    write(STDERR_FILENO, "/etc/rc OK\n", 18);
+}
+
+        
+execl("/bin/sh", "/bin/sh", RC_PATH, (char *)NULL);
+        {
+            char buf[64];
+            int n = snprintf(buf, sizeof(buf),
+                             "RUN_RC_EXECL_FAILED errno=%d\n", errno);
+            write(STDERR_FILENO, buf, n);
+        }
         _exit(1);
     }
-    if (pid > 0) wait_for(pid);
+
+    if (pid > 0) {
+        wait_for(pid);
+    }
 }
 
 static void run_shutdown_rc(void) {
@@ -270,6 +307,7 @@ static void single_boot(void) {
 }
 
 int main(int argc, char *argv[]) {
+    write(STDERR_FILENO, "INIT_MAIN_OK\n", 13);
     int single;
     single = 0;
     if (getpid() != 1) {
@@ -284,6 +322,6 @@ int main(int argc, char *argv[]) {
             single = 1;
     }
     if (single) single_boot();
-    else         normal_boot();
+    else { write(STDERR_FILENO, "BEFORE_NORMAL_BOOT\n", 19); normal_boot(); write(STDERR_FILENO, "AFTER_NORMAL_BOOT\n", 18); }
     return 0;
 }
