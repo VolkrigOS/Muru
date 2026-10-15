@@ -13,5 +13,6 @@ main(void) {
         fprintf(stderr, "Failed to send SIGINT to PID 1. Are you root?\n");
         return 1;
     }
+    fprintf(stdout, "ok\n");
     return 0;
 }
