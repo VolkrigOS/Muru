@@ -1,8 +1,6 @@
 /*.o
 muru
-
 /init
 /reboot
 /shutdown
 /su1
-/*.o
