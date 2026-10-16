@@ -433,7 +433,7 @@ int main(int argc, char *argv[])
             single = 1;
     }
 
-    xwrite(MURU_WARNING, "MURU " MURU_VERSION " is loading...");
+    fprintf(stdout, "   \033[95mMURU \033[96m" MURU_VERSION "\033[0m is running...\n\n");
     if (single)
         single_boot();
     else

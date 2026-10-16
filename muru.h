@@ -7,7 +7,7 @@
 #include <unistd.h>
 #include <sys/ioctl.h>
 
-#define MURU_VERSION "0.0.1"
+#define MURU_VERSION "0.0.3"
 
 #define MURU_OK      1
 #define MURU_WARNING 2
