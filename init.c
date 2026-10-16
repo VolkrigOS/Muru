@@ -88,8 +88,27 @@ static void init_console(void)
 static void wait_for(pid_t pid)
 {
     int st;
-    while (waitpid(pid, &st, 0) < 0 && errno == EINTR)
-        ;
+    pid_t result;
+
+    for (;;) {
+        result = waitpid(pid, &st, 0);
+
+        if (result >= 0)
+            return;
+
+        if (errno == EINTR) {
+            if (g_sig != S_NONE)
+                return;
+            continue;
+        }
+
+        if (errno != ECHILD) {
+            char buf[96];
+            snprintf(buf, sizeof(buf), "waitpid failed: %s", strerror(errno));
+            xwrite(MURU_ERROR, buf);
+        }
+        return;
+    }
 }
 
 static int parse_ttys(void)
@@ -186,32 +205,32 @@ static void run_rc(void)
     if (pid == 0) {
         if (access("/bin/sh", X_OK) != 0) {
             char buf[64];
-            snprintf(buf, sizeof(buf),
-                     "/bin/sh errno=%d", errno);
+            snprintf(buf, sizeof(buf), "/bin/sh errno=%d", errno);
             xwrite(MURU_ERROR, buf);
             _exit(127);
         }
 
-        xwrite(MURU_OK, "/bin/sh encontrado");
-
+        xwrite(MURU_OK, "/bin/sh");
+        
         if (access(RC_PATH, R_OK) != 0) {
             char buf[64];
-            snprintf(buf, sizeof(buf),
-                     "/etc/rc errno=%d", errno);
+            snprintf(buf, sizeof(buf), "%s don't exist", RC_PATH);
             xwrite(MURU_ERROR, buf);
             _exit(127);
         }
-
-        xwrite(MURU_OK, "/etc/rc encontrado");
-
-        execl("/bin/sh", "/bin/sh", RC_PATH, (char *)NULL);
-
-        {
+        
+        xwrite(MURU_OK, RC_PATH);
+        
+        if (access(RC_SHUT, F_OK) != 0) {
             char buf[64];
-            snprintf(buf, sizeof(buf),
-                     "Falha ao executar /etc/rc: errno=%d", errno);
+            snprintf(buf, sizeof(buf), "%s don't exist", RC_SHUT);
             xwrite(MURU_ERROR, buf);
+            _exit(127);
         }
+        
+        xwrite(MURU_OK, RC_SHUT);
+        
+        execl("/bin/sh", "/bin/sh", RC_PATH, (char *)NULL);
 
         _exit(127);
     }
@@ -219,7 +238,7 @@ static void run_rc(void)
     if (pid > 0)
         wait_for(pid);
     else
-        xwrite(MURU_ERROR, "Falha ao criar processo para /etc/rc");
+        xwrite(MURU_ERROR, "failed to kill /etc/rc");
 }
 
 static void run_shutdown_rc(void)
@@ -230,12 +249,11 @@ static void run_shutdown_rc(void)
     if (pid == 0)
     {
         execl("/bin/sh", "/bin/sh", RC_SHUT, (char *)NULL);
-        int err = errno;
-        xwrite(MURU_ERROR, strerror(err));
         _exit(1);
     }
-    if (pid > 0)
+    if (pid > 0) {
         wait_for(pid);
+    }
     else
     {
         int err = errno;
@@ -245,9 +263,15 @@ static void run_shutdown_rc(void)
 
 static void kill_all(void)
 {
-    kill(-1, SIGTERM);
-    sleep(3);
-    kill(-1, SIGKILL);
+    for (int sig = SIGTERM; ; sig = SIGKILL) {
+        for (pid_t pid = 2; pid < 32768; pid++)
+            kill(pid, sig);
+
+        if (sig == SIGKILL)
+            break;
+
+        sleep(3);
+    }
     sleep(1);
 }
 
@@ -284,7 +308,11 @@ static void do_poweroff(void)
     sync();
     umount_all();
     mount(NULL, "/", NULL, MS_REMOUNT | MS_RDONLY, NULL);
-    reboot(RB_POWER_OFF);
+    if (reboot(RB_POWER_OFF) < 0) {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "poweroff failed: %s", strerror(errno));
+        xwrite(MURU_ERROR, buf);
+    }
 }
 
 static void do_reboot(void)
@@ -294,7 +322,11 @@ static void do_reboot(void)
     sync();
     umount_all();
     mount(NULL, "/", NULL, MS_REMOUNT | MS_RDONLY, NULL);
-    reboot(RB_AUTOBOOT);
+    if (reboot(RB_AUTOBOOT) < 0) {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "reboot failed: %s", strerror(errno));
+        xwrite(MURU_ERROR, buf);
+    }
 }
 
 static void do_rescue(void)
@@ -334,11 +366,14 @@ static void mainloop(void)
     int st, i;
     while (1)
     {
+        if (g_sig)
+            handle_sig();
         p = waitpid(-1, &st, 0);
         if (p < 0)
         {
             if (errno == EINTR && g_sig)
                 handle_sig();
+            if (errno == ECHILD) pause();
             continue;
         }
         if (g_sig)
