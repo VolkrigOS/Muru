@@ -1,31 +1,36 @@
 CC = cc
 STRIP = strip
 
-CFLAGS = -std=c99 -Wall -Wextra -pedantic -D_XOPEN_SOURCE=700 -static
+CFLAGS = -std=c99 -Os -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion -Wformat=2 -Wundef -D_XOPEN_SOURCE=700 -ffunction-sections -fdata-sections -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident -static
+LDFLAGS = -Wl,--gc-sections -Wl,--as-needed -static
 
 PREFIX = /usr
 SBINDIR = $(PREFIX)/sbin
 DESTDIR =
 
-PROGRAMS = init su1 shutdown reboot
+PROGRAMS = init su1 shutdown reboot muructl
 
 all: build
 
 init: init.c
-	$(CC) $(CFLAGS) init.c -o init
-	$(STRIP) init
+	$(CC) $(CFLAGS) $(LDFLAGS) init.c -o init
+	$(STRIP) --strip-all init
 
 su1: su1.c
-	$(CC) $(CFLAGS) su1.c -o su1
-	$(STRIP) su1
+	$(CC) $(CFLAGS) $(LDFLAGS) su1.c -o su1
+	$(STRIP) --strip-all su1
 
 shutdown: shutdown.c
-	$(CC) $(CFLAGS) shutdown.c -o shutdown
-	$(STRIP) shutdown
+	$(CC) $(CFLAGS) $(LDFLAGS) shutdown.c -o shutdown
+	$(STRIP) --strip-all shutdown
 
 reboot: reboot.c
-	$(CC) $(CFLAGS) reboot.c -o reboot
-	$(STRIP) reboot
+	$(CC) $(CFLAGS) $(LDFLAGS) reboot.c -o reboot
+	$(STRIP) --strip-all reboot
+
+muructl: ctl.c
+	$(CC) $(CFLAGS) $(LDFLAGS) ctl.c -o muructl
+	$(STRIP) --strip-all muructl
 
 build: $(PROGRAMS)
 

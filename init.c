@@ -7,6 +7,9 @@
 
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/socket.h>
+#include <sys/select.h>
+#include <sys/un.h>
 #include <sys/mount.h>
 #include <sys/reboot.h>
 #include <sys/stat.h>
@@ -30,6 +33,10 @@
 #define S_REBOOT 2
 #define S_RESCUE 3
 
+#define MURU_OK 1
+#define MURU_WARNING 2
+#define MURU_ERROR 0
+
 typedef struct
 {
     char tty[64];
@@ -38,9 +45,200 @@ typedef struct
     pid_t pid;
 } Tty;
 
+struct service
+{
+    char name[64];
+    pid_t pid;
+    int running;
+};
+
 static volatile sig_atomic_t g_sig = S_NONE;
 static Tty g_ttys[TTYS_MAX];
 static int g_ntty = 0;
+
+int create_socket(void)
+{
+    int fd;
+    struct sockaddr_un addr;
+
+    if (mkdir(MURU_RUN_DIR, 0755) < 0 && errno != EEXIST)
+        return -1;
+
+    fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0)
+        return -1;
+
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+
+    if (strlen(MURU_SOCKET) >= sizeof(addr.sun_path))
+    {
+        close(fd);
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+
+    strcpy(addr.sun_path, MURU_SOCKET);
+
+    /* Remove a stale socket left by an unclean shutdown. */
+    if (unlink(MURU_SOCKET) < 0 && errno != ENOENT)
+        goto error;
+
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0)
+        goto error;
+
+    if (chmod(MURU_SOCKET, 0600) < 0)
+        goto error;
+
+    if (listen(fd, 5) < 0)
+        goto error;
+
+    return fd;
+
+error:
+    close(fd);
+    unlink(MURU_SOCKET);
+    return -1;
+}
+
+static int
+read_service_command(const char *name, char *command, size_t size)
+{
+    char path[256];
+    char line[512];
+    FILE *fp;
+    int found = 0;
+
+    if (strchr(name, '/') != NULL || strstr(name, "..") != NULL)
+        return -1;
+
+    if (snprintf(path, sizeof(path), "%s/%s",
+                 MURU_SERVICES_DIR, name) >= (int)sizeof(path))
+        return -1;
+
+    fp = fopen(path, "r");
+    if (fp == NULL)
+        return -1;
+
+    while (fgets(line, sizeof(line), fp) != NULL)
+    {
+        if (strncmp(line, "command=", 8) == 0)
+        {
+            char *value = line + 8;
+            value[strcspn(value, "\r\n")] = '\0';
+
+            if (*value == '\0' || strlen(value) >= size)
+                break;
+
+            strcpy(command, value);
+            found = 1;
+            break;
+        }
+    }
+
+    fclose(fp);
+    return found ? 0 : -1;
+}
+
+static int
+start_service(const char *name, pid_t *pid)
+{
+    char command[512];
+    pid_t child;
+
+    if (read_service_command(name, command, sizeof(command)) < 0)
+        return -1;
+
+    child = fork();
+    if (child < 0)
+        return -1;
+
+    if (child == 0)
+    {
+        execl(command, command, (char *)NULL);
+        _exit(127);
+    }
+
+    *pid = child;
+    return 0;
+}
+
+static void
+handle_client(int client)
+{
+    char buffer[BUFFER_SIZE];
+    char response[256];
+    char name[64];
+    pid_t pid;
+    ssize_t n;
+
+    n = read(client, buffer, sizeof(buffer) - 1);
+    if (n <= 0)
+        return;
+
+    buffer[n] = '\0';
+
+    if (sscanf(buffer, "start %63s", name) == 1 &&
+        strncmp(buffer, "start ", 6) == 0)
+    {
+        if (start_service(name, &pid) == 0)
+        {
+            snprintf(response, sizeof(response),
+                     "started %s (PID %ld)\n",
+                     name, (long)pid);
+            write(client, response, strlen(response));
+            return;
+        }
+        else
+        {
+            snprintf(response, sizeof(response),
+                     "failed to start %s\n", name);
+            write(client, response, strlen(response));
+            return;
+        }
+    }
+
+    write(client, "invalid command\n", 16);
+}
+
+static void xwrite(int type, const char *msg)
+{
+    struct winsize ws;
+    int fd = type == MURU_ERROR ? STDERR_FILENO : STDOUT_FILENO;
+    FILE *out = type == MURU_ERROR ? stderr : stdout;
+    int width = 80;
+
+    if (ioctl(fd, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
+        width = ws.ws_col;
+
+    const char *color = type == MURU_OK
+                            ? "\033[38;2;0;255;80m"
+                        : type == MURU_WARNING
+                            ? "\033[38;2;255;200;0m"
+                            : "\033[38;2;255;30;30m";
+
+    const char *status = type == MURU_OK ? "ok" : "!!";
+    int prefix = 2 + (int)strlen(msg);
+    int suffix = type == MURU_WARNING ? 0 : (int)strlen(status) + 5;
+    int spaces = width - prefix - suffix;
+
+    if (spaces < 1)
+        spaces = 1;
+
+    fprintf(out, "%s* \033[0m\033[97m%s\033[0m", color, msg);
+
+    if (type != MURU_WARNING)
+    {
+        for (int i = 0; i < spaces; i++)
+            fputc(' ', out);
+
+        fprintf(out, " \033[94m[\033[0m %s%s\033[0m \033[94m]\033[0m",
+                color, status);
+    }
+
+    fputc('\n', out);
+    fflush(out);
+}
 
 static void on_sig(int s)
 {
@@ -90,19 +288,22 @@ static void wait_for(pid_t pid)
     int st;
     pid_t result;
 
-    for (;;) {
+    for (;;)
+    {
         result = waitpid(pid, &st, 0);
 
         if (result >= 0)
             return;
 
-        if (errno == EINTR) {
+        if (errno == EINTR)
+        {
             if (g_sig != S_NONE)
                 return;
             continue;
         }
 
-        if (errno != ECHILD) {
+        if (errno != ECHILD)
+        {
             char buf[96];
             snprintf(buf, sizeof(buf), "waitpid failed: %s", strerror(errno));
             xwrite(MURU_ERROR, buf);
@@ -197,13 +398,14 @@ static void spawn_gettys(void)
         g_ttys[i].pid = start_getty(i);
 }
 
-
 static void run_rc(void)
 {
     pid_t pid = fork();
 
-    if (pid == 0) {
-        if (access("/bin/sh", X_OK) != 0) {
+    if (pid == 0)
+    {
+        if (access("/bin/sh", X_OK) != 0)
+        {
             char buf[64];
             snprintf(buf, sizeof(buf), "/bin/sh errno=%d", errno);
             xwrite(MURU_ERROR, buf);
@@ -211,25 +413,27 @@ static void run_rc(void)
         }
 
         xwrite(MURU_OK, "/bin/sh");
-        
-        if (access(RC_PATH, R_OK) != 0) {
+
+        if (access(RC_PATH, R_OK) != 0)
+        {
             char buf[64];
             snprintf(buf, sizeof(buf), "%s don't exist", RC_PATH);
             xwrite(MURU_ERROR, buf);
             _exit(127);
         }
-        
+
         xwrite(MURU_OK, RC_PATH);
-        
-        if (access(RC_SHUT, F_OK) != 0) {
+
+        if (access(RC_SHUT, F_OK) != 0)
+        {
             char buf[64];
             snprintf(buf, sizeof(buf), "%s don't exist", RC_SHUT);
             xwrite(MURU_ERROR, buf);
             _exit(127);
         }
-        
+
         xwrite(MURU_OK, RC_SHUT);
-        
+
         execl("/bin/sh", "/bin/sh", RC_PATH, (char *)NULL);
 
         _exit(127);
@@ -245,13 +449,14 @@ static void run_shutdown_rc(void)
 {
     pid_t pid;
     pid = fork();
-    
+
     if (pid == 0)
     {
         execl("/bin/sh", "/bin/sh", RC_SHUT, (char *)NULL);
         _exit(1);
     }
-    if (pid > 0) {
+    if (pid > 0)
+    {
         wait_for(pid);
     }
     else
@@ -263,7 +468,8 @@ static void run_shutdown_rc(void)
 
 static void kill_all(void)
 {
-    for (int sig = SIGTERM; ; sig = SIGKILL) {
+    for (int sig = SIGTERM;; sig = SIGKILL)
+    {
         for (pid_t pid = 2; pid < 32768; pid++)
             kill(pid, sig);
 
@@ -308,7 +514,8 @@ static void do_poweroff(void)
     sync();
     umount_all();
     mount(NULL, "/", NULL, MS_REMOUNT | MS_RDONLY, NULL);
-    if (reboot(RB_POWER_OFF) < 0) {
+    if (reboot(RB_POWER_OFF) < 0)
+    {
         char buf[128];
         snprintf(buf, sizeof(buf), "poweroff failed: %s", strerror(errno));
         xwrite(MURU_ERROR, buf);
@@ -322,7 +529,8 @@ static void do_reboot(void)
     sync();
     umount_all();
     mount(NULL, "/", NULL, MS_REMOUNT | MS_RDONLY, NULL);
-    if (reboot(RB_AUTOBOOT) < 0) {
+    if (reboot(RB_AUTOBOOT) < 0)
+    {
         char buf[128];
         snprintf(buf, sizeof(buf), "reboot failed: %s", strerror(errno));
         xwrite(MURU_ERROR, buf);
@@ -360,48 +568,55 @@ static void handle_sig(void)
         do_rescue();
 }
 
-static void mainloop(void)
+static void service_loop(int server_fd)
 {
-    pid_t p;
-    int st, i;
-    while (1)
+    for (;;)
     {
+        fd_set readfds;
+        struct timeval timeout;
+        int result;
+        pid_t p;
+        int st;
+
         if (g_sig)
             handle_sig();
-        p = waitpid(-1, &st, 0);
-        if (p < 0)
+
+        FD_ZERO(&readfds);
+        FD_SET(server_fd, &readfds);
+        timeout.tv_sec = 1;
+        timeout.tv_usec = 0;
+        result = select(server_fd + 1, &readfds, NULL, NULL, &timeout);
+        if (result > 0 && FD_ISSET(server_fd, &readfds))
         {
-            if (errno == EINTR && g_sig)
-                handle_sig();
-            if (errno == ECHILD) pause();
-            continue;
-        }
-        if (g_sig)
-            handle_sig();
-        for (i = 0; i < g_ntty; i++)
-        {
-            if (g_ttys[i].pid == p)
+            int client = accept(server_fd, NULL, NULL);
+            if (client >= 0)
             {
-                g_ttys[i].pid = start_getty(i);
-                break;
+                handle_client(client);
+                close(client);
+            }
+        }
+
+        while ((p = waitpid(-1, &st, WNOHANG)) > 0)
+        {
+            int i;
+            for (i = 0; i < g_ntty; i++)
+            {
+                if (g_ttys[i].pid == p)
+                {
+                    g_ttys[i].pid = start_getty(i);
+                    break;
+                }
             }
         }
     }
-}
-
-static void normal_boot(void)
-{
-    run_rc();
-    g_ntty = parse_ttys();
-    spawn_gettys();
-    mainloop();
 }
 
 static void single_boot(void)
 {
     pid_t pid = fork();
 
-    if (pid == 0) {
+    if (pid == 0)
+    {
         execl("/bin/sh", "/bin/sh", (char *)NULL);
         xwrite(MURU_ERROR, "Failed in start shell");
         _exit(127);
@@ -412,12 +627,12 @@ static void single_boot(void)
     else
         xwrite(MURU_ERROR, "Error on creating shell process");
 
-    normal_boot();
 }
 
 int main(int argc, char *argv[])
 {
     int single;
+    int server_fd;
     single = 0;
     if (getpid() != 1)
     {
@@ -434,11 +649,17 @@ int main(int argc, char *argv[])
     }
 
     fprintf(stdout, "   \033[95mMURU \033[96m" MURU_VERSION "\033[0m is running...\n\n");
+    server_fd = create_socket();
+    if (server_fd < 0)
+    {
+        xwrite(MURU_ERROR, "Unix socket failed");
+        return 1;
+    }
     if (single)
         single_boot();
-    else
-    {
-        normal_boot();
-    }
+    run_rc();
+    g_ntty = parse_ttys();
+    spawn_gettys();
+    service_loop(server_fd);
     return 0;
 }
