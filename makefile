@@ -8,7 +8,7 @@ PREFIX = /usr
 SBINDIR = $(PREFIX)/sbin
 DESTDIR =
 
-PROGRAMS = init su1 shutdown reboot muructl
+PROGRAMS = init su1 shutdown reboot murud muructl
 
 all: build
 
@@ -27,6 +27,10 @@ shutdown: shutdown.c
 reboot: reboot.c
 	$(CC) $(CFLAGS) $(LDFLAGS) reboot.c -o reboot
 	$(STRIP) --strip-all reboot
+
+murud: murud.c muru.h
+	$(CC) $(CFLAGS) $(LDFLAGS) murud.c -o murud
+	$(STRIP) --strip-all murud
 
 muructl: ctl.c
 	$(CC) $(CFLAGS) $(LDFLAGS) ctl.c -o muructl

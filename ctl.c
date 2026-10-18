@@ -22,8 +22,10 @@ send_command(const char *command)
     ssize_t n;
 
     fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd < 0)
+    if (fd < 0) {
+        perror("muructl: socket");
         return 1;
+    }
 
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
@@ -31,11 +33,14 @@ send_command(const char *command)
         sizeof(addr.sun_path) - 1);
 
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        perror("muructl: connect");
+        fprintf(stderr, "Try running %s", MURU_SOCKET);
         close(fd);
         return 1;
     }
 
     if (write(fd, command, strlen(command)) < 0) {
+        perror("muructl: write");
         close(fd);
         return 1;
     }
@@ -44,6 +49,10 @@ send_command(const char *command)
     if (n > 0) {
         response[n] = '\0';
         fputs(response, stdout);
+    } else if (n < 0) {
+        perror("muructl: read");
+    } else {
+        fprintf(stderr, "muructl: closed connection\n");
     }
 
     close(fd);
@@ -55,7 +64,6 @@ usage(void)
 {
     fprintf(stdout,
         "usage: muructl <command> [service]\n"
-                "usage: muructl <command> [service]\n"
         "\n"
         "commands:\n"
         "  start NAME      Start service\n"
@@ -73,6 +81,14 @@ s_start(const char *service)
 
     if (access(MURU_SOCKET, F_OK) != 0) {
         fprintf(stderr, "muructl: %s does not exist\n", MURU_SOCKET);
+        return 1;
+    }
+
+    char path[256];
+    snprintf(path, sizeof(path), "%s%s.service", MURU_SERVICES_DIR, service);
+
+    if (access(path, F_OK) != 0) {
+        fprintf(stderr, "muructl: create %s based on example.service");
         return 1;
     }
 

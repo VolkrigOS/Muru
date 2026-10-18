@@ -17,8 +17,8 @@
 #define MURU_SOCKET       MURU_RUN_DIR "/muru.sock"
 #define MURU_STATE_DIR    MURU_RUN_DIR "/services"
 
-#define TTYS_PATH "/etc/ttys"
 #define RC_PATH "/etc/rc"
 #define RC_SHUT "/etc/rc.shutdown"
+#define RC_US1 "/etc/rc.su1"
 
 #endif
