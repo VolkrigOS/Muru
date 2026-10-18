@@ -36,9 +36,12 @@ static int run_shutrc(void)
 }
 
 int main(void) {
-    if (reboot(RB_HALT_SYSTEM) == -1) {
+    if (geteuid() != 0) {
         fprintf(stderr, "must be run as root");
         return 1;
     }
+    run_shutrc();
+    sync();
+    reboot((int)RB_HALT_SYSTEM);
     return 0;
 }

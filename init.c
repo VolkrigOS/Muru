@@ -66,7 +66,8 @@ static void reap_loop(void)
 
     for (;;)
     {
-        while (waitpid(-1, NULL, WNOHANG) > 0); sigwait(&signals, &signal_number);
+        while (waitpid(-1, NULL, WNOHANG) > 0); 
+        sigwait(&signals, &signal_number);
     }
 }
 

@@ -1,17 +1,35 @@
+/*
+*       main murud structure
+*       see LICENSE for more licensing details.
+*/
+
 #define _XOPEN_SOURCE 700
 
-#include <sys/types.h>
-#include <sys/wait.h>
 #include <sys/socket.h>
 #include <sys/select.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <sys/stat.h>
-#include <sys/un.h>
-#include <fcntl.h>
 #include <unistd.h>
-#include <stdio.h>
 #include <string.h>
+#include <sys/un.h>
+#include <stdlib.h>
+#include <fcntl.h>
+#include <stdio.h>
 #include <errno.h>
 #include "muru.h"
+
+#define SERVICES_MAX 128
+/* Add more if you want */
+
+struct service
+{
+    const char *name;
+    const char *command;
+    pid_t pid;
+};
+
+struct service services[SERVICES_MAX];
 
 static int make_server(void)
 {
@@ -20,7 +38,6 @@ static int make_server(void)
 
     if (mkdir(MURU_RUN_DIR, 0755) < 0 && errno != EEXIST)
         return -1;
-
     fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0)
         return -1;
@@ -29,7 +46,6 @@ static int make_server(void)
         close(fd);
         return -1;
     }
-
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
     if (strlen(MURU_SOCKET) >= sizeof(addr.sun_path))
@@ -39,7 +55,6 @@ static int make_server(void)
         return -1;
     }
     strcpy(addr.sun_path, MURU_SOCKET);
-
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0)
     {
         close(fd);
@@ -62,8 +77,7 @@ static int read_command(const char *name, char *command, size_t size)
 
     if (name[0] == '\0' || strchr(name, '/') != NULL || strstr(name, ".."))
         return -1;
-    if (snprintf(path, sizeof(path), "%s/%s", MURU_SERVICES_DIR, name) >=
-        (int)sizeof(path))
+    if (snprintf(path, sizeof(path), "%s/%s.service", MURU_SERVICES_DIR, name) >= (int)sizeof(path))
         return -1;
 
     file = fopen(path, "r");
@@ -92,16 +106,30 @@ static int start_service(const char *name, pid_t *pid)
 {
     char command[512];
     pid_t child;
+    size_t count = 0;
 
-    if (read_command(name, command, sizeof(command)) < 0)
-        return -1;
+    if (read_command(name, command, sizeof(command)) < 0) return -1;
+    while (count < SERVICES_MAX && services[count].name != NULL) count++;
+
+    if (count == SERVICES_MAX) return -1;
     child = fork();
-    if (child < 0)
-        return -1;
-    if (child == 0)
-    {
+    if (child < 0) return -1;
+    if (child == 0) {
         execl(command, command, (char *)NULL);
         _exit(127);
+    }
+    services[count] = (struct service) {
+        .name = strdup(name),
+        .command = strdup(command),
+        .pid = child
+    };
+    if (services[count].name == NULL ||
+        services[count].command == NULL) {
+        free((void *)services[count].name);
+        free((void *)services[count].command);
+        services[count] = (struct service){0};
+        kill(child, SIGTERM);
+        return -1;
     }
     *pid = child;
     return 0;
@@ -115,18 +143,26 @@ static void handle_client(int client)
     pid_t pid;
     ssize_t n = read(client, request, sizeof(request) - 1);
 
-    if (n <= 0)
-        return;
+    if (n <= 0) return;
     request[n] = '\0';
-
-    if (sscanf(request, "start %63s", name) == 1 &&
-        strncmp(request, "start ", 6) == 0)
+    if (sscanf(request, "start %63s", name) == 1 && strncmp(request, "start ", 6) == 0)
     {
         if (start_service(name, &pid) == 0)
-            snprintf(response, sizeof(response), "started %s (PID %ld)\n",
-                     name, (long)pid);
+            snprintf(response, sizeof(response), "started %s (PID %ld)\n", name, (long)pid);
         else
             snprintf(response, sizeof(response), "failed to start %s\n", name);
+    }
+    else if (strcmp(request, "list") == 0)
+    {
+        size_t used = 0;
+
+        for (size_t i = 0; i < SERVICES_MAX; i++) {
+            if (!services[i].name) continue;
+            int n = snprintf(response + used, sizeof(response) - used,"%s    %ld\n",services[i].name, (long)services[i].pid);
+            if (n < 0 || (size_t)n >= sizeof(response) - used) break;
+            used += (size_t)n;
+        }
+        if (used == 0) snprintf(response, sizeof(response), "No services running\n");
     }
     else
         snprintf(response, sizeof(response), "invalid command\n");
@@ -143,13 +179,13 @@ int main(void)
         perror("murud: socket setup");
         return 1;
     }
-
     for (;;)
     {
         fd_set readfds;
         struct timeval timeout = {1, 0};
+        pid_t dead;
         int ready;
-
+        
         FD_ZERO(&readfds);
         FD_SET(server, &readfds);
         ready = select(server + 1, &readfds, NULL, NULL, &timeout);
@@ -163,10 +199,20 @@ int main(void)
                 close(client);
             }
         }
-        else if (ready < 0 && errno != EINTR)
-            perror("murud: select");
-
-        while (waitpid(-1, NULL, WNOHANG) > 0)
-            ;
+        else if (ready < 0 && errno != EINTR) perror("murud: select");
+        
+        while ((dead = waitpid(-1, NULL, WNOHANG)) > 0)
+        {
+            for (size_t i = 0; i < SERVICES_MAX; i++)
+            {
+                if (services[i].pid == dead)
+                {
+                    free((void *)services[i].name);
+                    free((void *)services[i].command);
+                    services[i] = (struct service){0};
+                    break;
+                }
+            }
+        }
     }
 }

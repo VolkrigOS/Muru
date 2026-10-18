@@ -13,8 +13,7 @@
 #include <stdio.h>
 #include "muru.h"
 
-int
-send_command(const char *command)
+int send_command(const char *command)
 {
     int fd;
     struct sockaddr_un addr;
@@ -34,7 +33,7 @@ send_command(const char *command)
 
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         perror("muructl: connect");
-        fprintf(stderr, "Try running %s", MURU_SOCKET);
+        fprintf(stderr, "Try running murud\n");
         close(fd);
         return 1;
     }
@@ -59,8 +58,7 @@ send_command(const char *command)
     return n > 0 ? 0 : 1;
 }
 
-void
-usage(void)
+void usage(void)
 {
     fprintf(stdout,
         "usage: muructl <command> [service]\n"
@@ -74,8 +72,7 @@ usage(void)
         "  list       List services\n");
 }
 
-int
-s_start(const char *service)
+int s_start(const char *service)
 {
     char command[BUFFER_SIZE];
 
@@ -85,10 +82,10 @@ s_start(const char *service)
     }
 
     char path[256];
-    snprintf(path, sizeof(path), "%s%s.service", MURU_SERVICES_DIR, service);
+    snprintf(path, sizeof(path), "%s/%s.service", MURU_SERVICES_DIR, service);
 
     if (access(path, F_OK) != 0) {
-        fprintf(stderr, "muructl: create %s based on example.service");
+        fprintf(stderr, "muructl: create a file named %s.service based on example.service\n", service);
         return 1;
     }
 
@@ -101,9 +98,22 @@ s_start(const char *service)
     return send_command(command);
 }
 
-int
-main(int argc, char **argv) 
+int s_list(void)
 {
+    if (access(MURU_SOCKET, F_OK) != 0) {
+        fprintf(stderr, "muructl: %s does not exist\n", MURU_SOCKET);
+        return 1;
+    }
+
+    return send_command("list");
+}
+
+int main(int argc, char **argv) 
+{
+    if (geteuid() != 0) {
+        fprintf(stderr, "are you root?\n");
+        return 1;
+    }
     if (argc < 2)
     {
         usage();
@@ -113,6 +123,9 @@ main(int argc, char **argv)
     const char *command = argv[1];
     if (strcmp(command, "start") == 0 && argc == 3)
         return s_start(argv[2]);
+
+    if (strcmp(command, "list") == 0)
+        return s_list();
 
     usage();
     return 1;
