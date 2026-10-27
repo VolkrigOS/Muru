@@ -8,7 +8,7 @@ PREFIX = /usr
 SBINDIR = $(PREFIX)/sbin
 DESTDIR =
 
-PROGRAMS = init su1 shutdown reboot murud muructl
+PROGRAMS = init su1 shutdown reboot
 
 all: build
 
